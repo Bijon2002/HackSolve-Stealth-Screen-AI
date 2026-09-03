@@ -773,25 +773,45 @@ class StealthOverlayApp:
 
         MOUSEEVENTF_WHEEL = 0x0800
         WHEEL_DELTA = 120
-        # Scroll clicks per frame (~65% of screen height jump)
-        scroll_clicks_per_frame = 7
+        scroll_clicks_per_frame = 9
 
-        for i in range(1, frames):
-            self.update_status(f"Auto-scrolling problem ({i+1}/{frames})...", self.warning_color)
-            # Scroll down smoothly
-            for _ in range(scroll_clicks_per_frame):
-                ctypes.windll.user32.mouse_event(MOUSEEVENTF_WHEEL, 0, 0, -WHEEL_DELTA, 0)
-                time.sleep(0.03)
-            time.sleep(0.35)  # Wait for page layout/render
-            img = self.capture_screen()
-            if img:
-                images.append(img)
+        # Target the left problem pane on HackerRank/LeetCode (35% width, 50% height)
+        u32 = ctypes.windll.user32
+        sw = u32.GetSystemMetrics(0)
+        sh = u32.GetSystemMetrics(1)
+        target_x = int(sw * 0.35)
+        target_y = int(sh * 0.50)
 
-        # Smoothly scroll back up to restore user's original view
-        total_scroll_back = (len(images) - 1) * scroll_clicks_per_frame
-        for _ in range(total_scroll_back):
-            ctypes.windll.user32.mouse_event(MOUSEEVENTF_WHEEL, 0, 0, WHEEL_DELTA, 0)
-            time.sleep(0.015)
+        # Save cursor position
+        class POINT(ctypes.Structure):
+            _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+        orig_pt = POINT()
+        u32.GetCursorPos(ctypes.byref(orig_pt))
+
+        try:
+            # Place cursor squarely over the problem pane
+            u32.SetCursorPos(target_x, target_y)
+            time.sleep(0.05)
+
+            for i in range(1, frames):
+                self.update_status(f"Auto-scrolling problem ({i+1}/{frames})...", self.warning_color)
+                # Scroll down smoothly
+                for _ in range(scroll_clicks_per_frame):
+                    u32.mouse_event(MOUSEEVENTF_WHEEL, 0, 0, -WHEEL_DELTA, 0)
+                    time.sleep(0.02)
+                time.sleep(0.45)  # Wait for page layout/render
+                img = self.capture_screen()
+                if img:
+                    images.append(img)
+
+            # Smoothly scroll back up to restore user's original view
+            total_scroll_back = (len(images) - 1) * scroll_clicks_per_frame
+            for _ in range(total_scroll_back):
+                u32.mouse_event(MOUSEEVENTF_WHEEL, 0, 0, WHEEL_DELTA, 0)
+                time.sleep(0.015)
+        finally:
+            # Restore user's mouse position
+            u32.SetCursorPos(orig_pt.x, orig_pt.y)
 
         return self.stitch_images(images)
 
@@ -846,19 +866,35 @@ class StealthOverlayApp:
         return None
 
     def extract_text_ocr(self, img: "Image.Image") -> str:
-        """Runs Tesseract OCR on preprocessed image."""
-        if not pytesseract:
+        """Extracts text using Windows native OCR (winocr) or Tesseract."""
+        if not img:
             return ""
+
+        # 1. Native Windows 10/11 OCR (winocr) — instantly available without setup
         try:
-            preprocessed = preprocess_image_for_ocr(img)
-            # Custom Tesseract configuration for code and text
-            custom_config = r"--oem 3 --psm 6"
-            text = pytesseract.image_to_string(preprocessed, config=custom_config)
-            return text.strip()
-        except Exception as e:
-            # If Tesseract is not installed, HackSolve automatically uses Gemini Multimodal Vision
-            print(f"[Info] Tesseract OCR not active ({e.__class__.__name__}) — seamlessly using Gemini Multimodal Vision fallback.")
-            return ""
+            import winocr, asyncio
+            res = asyncio.run(winocr.recognize_pil(img, lang="en"))
+            if res and res.text and len(res.text.strip()) > 15:
+                extracted = res.text.strip()
+                print(f"[OCR] Extracted {len(extracted)} chars via Windows Native OCR")
+                return extracted
+        except Exception:
+            pass
+
+        # 2. Fallback to Tesseract OCR
+        if pytesseract:
+            try:
+                preprocessed = preprocess_image_for_ocr(img)
+                custom_config = r"--oem 3 --psm 6"
+                text = pytesseract.image_to_string(preprocessed, config=custom_config)
+                if text and len(text.strip()) > 15:
+                    extracted = text.strip()
+                    print(f"[OCR] Extracted {len(extracted)} chars via Tesseract OCR")
+                    return extracted
+            except Exception:
+                pass
+
+        return ""
 
     def solve_with_gemini(self, ocr_text: str, screenshot: "Image.Image", api_key: str, timeout: int = 25) -> dict:
         """Sends problem text (or multimodal image if OCR text is insufficient) to Gemini."""
@@ -1049,8 +1085,10 @@ class StealthOverlayApp:
         openrouter_key = get_active_openrouter_key()
 
         providers = []
+        has_viable_text = len(ocr_text.strip()) >= 20
+
         # Priority 1: Groq (if OCR text exists) — 14,400 req/day, blazing fast (<1s)
-        if len(ocr_text.strip()) >= 25 and groq_key:
+        if has_viable_text and groq_key:
             providers.append({
                 "name": "Groq",
                 "type": "openai_compat",
@@ -1059,7 +1097,7 @@ class StealthOverlayApp:
                 "url": "https://api.groq.com/openai/v1/chat/completions"
             })
 
-        # Priority 2: Gemini (Vision + Text) — Full multimodal vision support
+        # Priority 2: Gemini (Multimodal Vision + Text) — Full multimodal vision support
         if gemini_key:
             providers.append({
                 "name": "Gemini",
@@ -1069,8 +1107,8 @@ class StealthOverlayApp:
                 "url": f"https://generativelanguage.googleapis.com/v1beta/models/{DEFAULT_MODEL}:generateContent"
             })
 
-        # Priority 3: Groq with fallback model (if Gemini fails or OCR text was short)
-        if groq_key and not any(p["name"] == "Groq" for p in providers):
+        # Priority 3: Groq Fallback model (ONLY if viable OCR text exists!)
+        if has_viable_text and groq_key:
             providers.append({
                 "name": "Groq",
                 "type": "openai_compat",
@@ -1079,8 +1117,8 @@ class StealthOverlayApp:
                 "url": "https://api.groq.com/openai/v1/chat/completions"
             })
 
-        # Priority 4: OpenRouter
-        if openrouter_key:
+        # Priority 4: OpenRouter (if text exists)
+        if has_viable_text and openrouter_key:
             providers.append({
                 "name": "OpenRouter",
                 "type": "openai_compat",
@@ -1096,10 +1134,11 @@ class StealthOverlayApp:
         for p in providers:
             p_name = p["name"]
             p_model = p["model"]
+            p_timeout = 16 if p["type"] == "gemini" else 5
             self.update_status(f"Trying {p_name} ({p_model})...", "#89b4fa")
             t_start = time.time()
             try:
-                parsed = self.call_single_provider(p, ocr_text, screenshot, timeout=5)
+                parsed = self.call_single_provider(p, ocr_text, screenshot, timeout=p_timeout)
                 if parsed and parsed.get("code"):
                     elapsed = round(time.time() - t_start, 2)
                     parsed["provider_name"] = p_name
