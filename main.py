@@ -70,6 +70,10 @@ WDA_NONE = 0x00000000
 WDA_MONITOR = 0x00000001
 WDA_EXCLUDEFROMCAPTURE = 0x00000011  # Windows 10 build 2004+ (Stealth from OBS, Zoom, Teams, Meet)
 
+GWL_EXSTYLE = -20
+WS_EX_TOOLWINDOW = 0x00000080
+WS_EX_APPWINDOW = 0x00040000
+
 def apply_stealth_affinity(hwnd: int) -> bool:
     """Applies Windows Display Affinity to make the window invisible to capture."""
     if not hwnd or sys.platform != "win32":
@@ -85,6 +89,23 @@ def apply_stealth_affinity(hwnd: int) -> bool:
         return res2 != 0
     except Exception as e:
         print(f"[Stealth Error] Could not set window display affinity: {e}")
+        return False
+
+
+def hide_window_from_taskbar(hwnd: int) -> bool:
+    """Removes the window from the Windows Taskbar and Alt+Tab switcher."""
+    if not hwnd or sys.platform != "win32":
+        return False
+    try:
+        user32 = ctypes.windll.user32
+        style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+        style = (style & ~WS_EX_APPWINDOW) | WS_EX_TOOLWINDOW
+        user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style)
+        # Refresh frame: SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED
+        user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0027)
+        return True
+    except Exception as e:
+        print(f"[Stealth Error] Could not hide from taskbar: {e}")
         return False
 
 
@@ -269,7 +290,7 @@ class StealthOverlayApp:
         self.setup_hotkey()
 
     def init_stealth(self):
-        """Finds top-level Win32 HWND and sets stealth affinity."""
+        """Finds top-level Win32 HWND and sets stealth affinity + hides from taskbar."""
         try:
             # On Windows Tkinter, the top-level container HWND is wm_frame or GetParent(winfo_id)
             hwnd = None
@@ -285,11 +306,10 @@ class StealthOverlayApp:
             if not hwnd:
                 hwnd = self.root.winfo_id()
 
-            success = apply_stealth_affinity(hwnd)
-            if success:
-                self.update_status("Stealth Active (Invisible to Screen Share)", "#a6e3a1")
-            else:
-                self.update_status("Stealth Ready (Default Monitor)", "#f9e2af")
+            self.hwnd = hwnd
+            apply_stealth_affinity(hwnd)
+            hide_window_from_taskbar(hwnd)
+            self.update_status("Stealth Active (Invisible to Screen Share & Taskbar)", "#a6e3a1")
         except Exception as e:
             self.update_status(f"Affinity Warning: {e}", "#f38ba8")
 
@@ -316,8 +336,22 @@ class StealthOverlayApp:
         if keyboard:
             try:
                 keyboard.add_hotkey(HOTKEY, self.trigger_scan_thread, suppress=False)
+                # F10 Panic / Boss Key: Instantly hides or restores the entire HUD
+                keyboard.add_hotkey("f10", self.toggle_stealth_visibility, suppress=False)
             except Exception as e:
                 print(f"[Hotkey Warning] Could not hook '{HOTKEY}': {e}. (Run as Administrator)")
+
+    def toggle_stealth_visibility(self):
+        """Boss Key (F10): Instantly hides or restores the entire HUD."""
+        if getattr(self, "_is_hidden", False):
+            self.root.deiconify()
+            self._is_hidden = False
+            if hasattr(self, "hwnd"):
+                hide_window_from_taskbar(self.hwnd)
+            self.update_status("HUD Restored", self.success_color)
+        else:
+            self.root.withdraw()
+            self._is_hidden = True
         # Also bind escape to minimize / restore
         self.root.bind("<Escape>", lambda e: self.toggle_collapse())
 
@@ -712,6 +746,12 @@ class StealthOverlayApp:
     def trigger_scan_thread(self):
         if self.is_processing:
             return
+        # If HUD was hidden via F10, automatically unhide so user sees the solution
+        if getattr(self, "_is_hidden", False):
+            self.root.deiconify()
+            self._is_hidden = False
+            if hasattr(self, "hwnd"):
+                hide_window_from_taskbar(self.hwnd)
         # 6-second cooldown to respect Google's 5-RPM burst limit
         now = time.time()
         elapsed = now - getattr(self, "_last_scan_time", 0)

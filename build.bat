@@ -35,6 +35,7 @@ pyinstaller --onefile --noconsole --name HackSolve --clean ^
     --hidden-import "keyboard" ^
     --hidden-import "mss" ^
     --hidden-import "requests" ^
+    --hidden-import "winocr" ^
     main.py
 
 if %errorlevel% equ 0 (
