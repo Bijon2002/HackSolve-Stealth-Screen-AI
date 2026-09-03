@@ -55,8 +55,9 @@ OVERLAY_Y = 50
 OVERLAY_WIDTH = 540
 OVERLAY_HEIGHT = 680
 OPACITY = 0.95
-DEFAULT_MODEL = "gemini-2.0-flash"
-FALLBACK_MODELS = ["gemini-1.5-flash"]
+DEFAULT_MODEL = "gemini-flash-latest"
+FALLBACK_MODELS = ["gemini-2.5-flash", "gemini-3.7-flash"]
+TIMEOUT = 30
 # =====================================================================
 
 
@@ -891,7 +892,7 @@ class StealthOverlayApp:
                 data_json = json.dumps(payload).encode("utf-8")
 
                 if requests:
-                    resp = requests.post(url, headers=headers, json=payload, timeout=25)
+                    resp = requests.post(url, headers=headers, json=payload, timeout=35)
                     if resp.status_code == 200:
                         res_json = resp.json()
                         text_content = res_json["candidates"][0]["content"]["parts"][0]["text"]
