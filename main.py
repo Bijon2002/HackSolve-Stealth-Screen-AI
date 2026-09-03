@@ -873,13 +873,15 @@ class StealthOverlayApp:
         # 1. Native Windows 10/11 OCR (winocr) — instantly available without setup
         try:
             import winocr, asyncio
-            res = asyncio.run(winocr.recognize_pil(img, lang="en"))
+            async def _do_ocr(p_img):
+                return await winocr.recognize_pil(p_img, lang="en")
+            res = asyncio.run(_do_ocr(img))
             if res and res.text and len(res.text.strip()) > 15:
                 extracted = res.text.strip()
                 print(f"[OCR] Extracted {len(extracted)} chars via Windows Native OCR")
                 return extracted
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[OCR Notice] winocr: {e}")
 
         # 2. Fallback to Tesseract OCR
         if pytesseract:
@@ -1085,19 +1087,9 @@ class StealthOverlayApp:
         openrouter_key = get_active_openrouter_key()
 
         providers = []
-        has_viable_text = len(ocr_text.strip()) >= 20
+        has_full_text = len(ocr_text.strip()) >= 80
 
-        # Priority 1: Groq (if OCR text exists) — 14,400 req/day, blazing fast (<1s)
-        if has_viable_text and groq_key:
-            providers.append({
-                "name": "Groq",
-                "type": "openai_compat",
-                "key": groq_key,
-                "model": GROQ_MODEL,
-                "url": "https://api.groq.com/openai/v1/chat/completions"
-            })
-
-        # Priority 2: Gemini (Multimodal Vision + Text) — Full multimodal vision support
+        # Priority 1: Gemini (Multimodal Vision) — directly sees problem, code editor & test cases
         if gemini_key:
             providers.append({
                 "name": "Gemini",
@@ -1107,8 +1099,18 @@ class StealthOverlayApp:
                 "url": f"https://generativelanguage.googleapis.com/v1beta/models/{DEFAULT_MODEL}:generateContent"
             })
 
-        # Priority 3: Groq Fallback model (ONLY if viable OCR text exists!)
-        if has_viable_text and groq_key:
+        # Priority 2: Groq (if viable OCR problem text exists >= 80 chars) — 14,400 req/day
+        if has_full_text and groq_key:
+            providers.append({
+                "name": "Groq",
+                "type": "openai_compat",
+                "key": groq_key,
+                "model": GROQ_MODEL,
+                "url": "https://api.groq.com/openai/v1/chat/completions"
+            })
+
+        # Priority 3: Groq Fallback model (if text exists)
+        if has_full_text and groq_key:
             providers.append({
                 "name": "Groq",
                 "type": "openai_compat",
@@ -1118,7 +1120,7 @@ class StealthOverlayApp:
             })
 
         # Priority 4: OpenRouter (if text exists)
-        if has_viable_text and openrouter_key:
+        if has_full_text and openrouter_key:
             providers.append({
                 "name": "OpenRouter",
                 "type": "openai_compat",
