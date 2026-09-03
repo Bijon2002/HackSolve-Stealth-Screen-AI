@@ -56,7 +56,7 @@ OVERLAY_WIDTH = 540
 OVERLAY_HEIGHT = 680
 OPACITY = 0.95
 DEFAULT_MODEL = "gemini-3.6-flash"
-FALLBACK_MODELS = ["gemini-flash-latest", "gemini-3.1-pro-preview", "gemini-pro-latest"]
+FALLBACK_MODELS = ["gemini-flash-latest"]
 # =====================================================================
 
 
@@ -665,6 +665,15 @@ class StealthOverlayApp:
     def trigger_scan_thread(self):
         if self.is_processing:
             return
+        # 6-second cooldown to respect Google's 5-RPM burst limit
+        now = time.time()
+        elapsed = now - getattr(self, "_last_scan_time", 0)
+        if elapsed < 5.0:
+            wait_sec = int(5.0 - elapsed) + 1
+            self.update_status(f"Please wait {wait_sec}s before next scan...", self.warning_color)
+            return
+        self._last_scan_time = now
+
         thread = threading.Thread(target=self.run_screen_solve_pipeline, daemon=True)
         thread.start()
 
@@ -835,12 +844,13 @@ class StealthOverlayApp:
         if use_multimodal and screenshot:
             # Compress screenshot for fast upload
             buffered = io.BytesIO()
-            # Resize if screenshot is huge (> 1920x1080) to conserve bandwidth
+            # Resize if screenshot is huge (> 1920 width or > 2400 height) to conserve bandwidth
             w, h = screenshot.size
-            if w > 1920:
-                scale = 1920 / w
+            max_w, max_h = 1920, 2400
+            if w > max_w or h > max_h:
+                scale = min(max_w / w, max_h / h)
                 screenshot = screenshot.resize((int(w * scale), int(h * scale)), Image.Resampling.LANCZOS)
-            screenshot.save(buffered, format="JPEG", quality=85)
+            screenshot.save(buffered, format="JPEG", quality=82)
             img_b64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
             parts.append({
                 "inline_data": {
@@ -888,6 +898,10 @@ class StealthOverlayApp:
                         parsed = self.parse_gemini_json_response(text_content)
                         parsed["usage_metadata"] = res_json.get("usageMetadata", {})
                         return parsed
+                    elif resp.status_code == 429:
+                        last_error = "Rate limit reached (Too many scans in 1 minute). Please wait 15 seconds."
+                        print("[Warning] 429 Rate limit from Google. Waiting a few seconds recommended.")
+                        break
                     else:
                         last_error = f"{resp.status_code}: {resp.text}"
                 else:
