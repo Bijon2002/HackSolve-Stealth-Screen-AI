@@ -67,6 +67,8 @@ python main.py
 | Action | Control | Description |
 |---|---|---|
 | **Scan & Solve** | **F9** | Auto-scrolls, scans the screen, and solves the problem |
+| **Boss / Panic Key** | **F10** | Instantly hides / restores the HUD from your monitor |
+| **Emergency Shutdown** | **Ctrl + Shift + Q** | Completely kills and closes the background application |
 | **Toggle Auto-Scroll** | **[📜 Scroll: ON/OFF]** | Toggles multi-frame auto-scrolling vs. single screen capture |
 | **Manage API Keys** | **[🔑 API Key]** | Opens the stealth Multi-AI key manager with live test buttons |
 | **Copy Python Code** | **[📋 Copy Code]** | Copies clean, ready-to-submit Python 3 solution to clipboard |

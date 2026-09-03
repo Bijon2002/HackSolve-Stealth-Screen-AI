@@ -338,8 +338,18 @@ class StealthOverlayApp:
                 keyboard.add_hotkey(HOTKEY, self.trigger_scan_thread, suppress=False)
                 # F10 Panic / Boss Key: Instantly hides or restores the entire HUD
                 keyboard.add_hotkey("f10", self.toggle_stealth_visibility, suppress=False)
+                # Ctrl + Shift + Q: Global emergency shutdown / exit hotkey
+                keyboard.add_hotkey("ctrl+shift+q", self.quit_application, suppress=False)
             except Exception as e:
                 print(f"[Hotkey Warning] Could not hook '{HOTKEY}': {e}. (Run as Administrator)")
+
+    def quit_application(self):
+        """Cleanly shuts down and exits the background application."""
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
+        os._exit(0)
 
     def toggle_stealth_visibility(self):
         """Boss Key (F10): Instantly hides or restores the entire HUD."""
