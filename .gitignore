@@ -17,6 +17,8 @@ dist/
 .env
 *.env
 secrets.json
+.quota_tracker.json
+*.quota*.json
 
 # PyInstaller temporary files
 *.manifest

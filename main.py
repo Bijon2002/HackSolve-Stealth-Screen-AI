@@ -120,6 +120,70 @@ def preprocess_image_for_ocr(img: "Image.Image") -> "Image.Image":
         return img
 
 
+from datetime import datetime, timezone
+
+
+class QuotaTracker:
+    """Tracks daily question requests and tokens against Google AI Studio free tier."""
+    DAILY_LIMIT = 1500
+    CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".quota_tracker.json")
+
+    def __init__(self):
+        self.used_today = 32  # Initialized to estimated session usage
+        self.last_tokens = 0
+        self.current_date = self._get_today_date()
+        self.load()
+
+    def _get_today_date(self) -> str:
+        return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    def load(self):
+        today = self._get_today_date()
+        if os.path.exists(self.CACHE_FILE):
+            try:
+                with open(self.CACHE_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if data.get("date") == today:
+                        self.used_today = data.get("used", self.used_today)
+                        self.last_tokens = data.get("last_tokens", 0)
+                    else:
+                        # New day: automatically reset quota
+                        self.used_today = 0
+                        self.last_tokens = 0
+                        self.save()
+            except Exception:
+                pass
+
+    def save(self):
+        today = self._get_today_date()
+        try:
+            with open(self.CACHE_FILE, "w", encoding="utf-8") as f:
+                json.dump({
+                    "date": today,
+                    "used": self.used_today,
+                    "total_limit": self.DAILY_LIMIT,
+                    "last_tokens": self.last_tokens
+                }, f, indent=2)
+        except Exception:
+            pass
+
+    def record_request(self, tokens: int = 0):
+        today = self._get_today_date()
+        if today != self.current_date:
+            self.current_date = today
+            self.used_today = 0
+        self.used_today += 1
+        self.last_tokens = tokens
+        self.save()
+
+    def get_remaining(self) -> int:
+        return max(0, self.DAILY_LIMIT - self.used_today)
+
+    def get_display_text(self) -> str:
+        rem = self.get_remaining()
+        return f"Left: {rem:,} / {self.DAILY_LIMIT:,}"
+
+
 class StealthOverlayApp:
     def __init__(self, root: tk.Tk):
         self.root = root
@@ -128,6 +192,8 @@ class StealthOverlayApp:
         self.last_extracted_text = ""
         self.last_explanation = ""
         self.is_processing = False
+        self.opacity_level = OPACITY
+        self.quota_tracker = QuotaTracker()
         self.opacity_level = OPACITY
 
         # Window styling
@@ -322,6 +388,17 @@ class StealthOverlayApp:
         )
         self.lbl_status_text.pack(side="left", fill="x")
 
+        # Quota remaining badge on right of status bar
+        self.lbl_quota = tk.Label(
+            self.status_bar,
+            text=self.quota_tracker.get_display_text(),
+            font=("Segoe UI", 8, "bold"),
+            bg="#11111b",
+            fg=self.success_color,
+            padx=8
+        )
+        self.lbl_quota.pack(side="right")
+
         # 3. Action Toolbar
         self.toolbar = tk.Frame(self.main_container, bg=self.card_bg, padx=8, pady=6)
         self.toolbar.pack(fill="x", side="top", pady=2)
@@ -373,6 +450,23 @@ class StealthOverlayApp:
             command=self.clear_all
         )
         self.btn_clear.pack(side="left", padx=4)
+
+        # API Key Change button on right of toolbar
+        self.btn_api_key = tk.Button(
+            self.toolbar,
+            text="🔑 API Key",
+            font=("Segoe UI", 9),
+            bg="#313244",
+            fg=self.accent_color,
+            activebackground="#45475a",
+            activeforeground="#ffffff",
+            bd=0,
+            padx=8,
+            pady=4,
+            cursor="hand2",
+            command=self.show_api_key_prompt
+        )
+        self.btn_api_key.pack(side="right", padx=4)
 
         # 4. Tabbed Content (Notebook)
         style = ttk.Style()
@@ -695,7 +789,9 @@ class StealthOverlayApp:
                     if resp.status_code == 200:
                         res_json = resp.json()
                         text_content = res_json["candidates"][0]["content"]["parts"][0]["text"]
-                        return self.parse_gemini_json_response(text_content)
+                        parsed = self.parse_gemini_json_response(text_content)
+                        parsed["usage_metadata"] = res_json.get("usageMetadata", {})
+                        return parsed
                     else:
                         last_error = f"{resp.status_code}: {resp.text}"
                 else:
@@ -706,7 +802,9 @@ class StealthOverlayApp:
                         res_body = response.read().decode("utf-8")
                         res_json = json.loads(res_body)
                         text_content = res_json["candidates"][0]["content"]["parts"][0]["text"]
-                        return self.parse_gemini_json_response(text_content)
+                        parsed = self.parse_gemini_json_response(text_content)
+                        parsed["usage_metadata"] = res_json.get("usageMetadata", {})
+                        return parsed
             except Exception as ex:
                 last_error = str(ex)
                 continue
@@ -750,13 +848,26 @@ class StealthOverlayApp:
         self.last_explanation = explanation
         self.last_extracted_text = ocr_text
 
+        # Update quota tracking and badge
+        usage_meta = solution_data.get("usage_metadata", {})
+        total_tokens = usage_meta.get("totalTokenCount", 0)
+        prompt_tokens = usage_meta.get("promptTokenCount", 0)
+        code_tokens = usage_meta.get("candidatesTokenCount", 0)
+
+        self.quota_tracker.record_request(tokens=total_tokens)
+        self.update_quota_display()
+
         # Update Code tab
         self.txt_code.delete("1.0", tk.END)
         self.txt_code.insert("1.0", code)
 
         # Update Explanation tab
         self.txt_exp.delete("1.0", tk.END)
-        exp_header = f"Problem: {title}\nConfidence: {confidence}\n{'='*40}\n\n"
+        token_info = ""
+        if total_tokens > 0:
+            token_info = f"Tokens: {total_tokens:,} (Prompt: {prompt_tokens:,} | Code: {code_tokens:,})\n"
+        quota_info = f"Daily Remaining: {self.quota_tracker.get_remaining():,} / 1,500 questions\n"
+        exp_header = f"Problem: {title}\nConfidence: {confidence}\n{token_info}{quota_info}{'='*45}\n\n"
         self.txt_exp.insert("1.0", exp_header + str(explanation))
 
         # Update OCR tab
@@ -768,54 +879,168 @@ class StealthOverlayApp:
 
         # Switch to Code tab
         self.notebook.select(self.tab_code)
-        self.update_status(f"✓ Solution Ready ({title[:30]})", self.success_color)
+        self.update_status(f"✓ Ready: {title[:28]}", self.success_color)
+
+    def update_quota_display(self):
+        """Refreshes the remaining questions counter on the status bar."""
+        if hasattr(self, "lbl_quota"):
+            self.lbl_quota.config(text=self.quota_tracker.get_display_text())
 
     def show_api_key_prompt(self):
-        """Displays friendly modal to enter Gemini API key if missing."""
-        def save_key():
-            new_key = ent.get().strip()
-            if new_key:
-                env_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
-                try:
-                    with open(env_file, "w", encoding="utf-8") as f:
-                        f.write(f"GEMINI_API_KEY={new_key}\n")
-                except Exception:
-                    pass
-                os.environ["GEMINI_API_KEY"] = new_key
-                win.destroy()
-                self.update_status("Gemini Key Saved! Press F9 to Scan", self.success_color)
+        """Displays interactive API Key Manager to change, test, and view quota."""
+        active_key = get_active_gemini_key()
+        masked_key = (active_key[:8] + "..." + active_key[-4:]) if len(active_key) > 12 else (active_key or "Not Set")
 
         win = tk.Toplevel(self.root)
-        win.title("Enter Gemini API Key")
-        win.geometry("420x160")
+        win.title("🔑 Gemini API Key Manager")
+        win.geometry("480x280")
         win.configure(bg="#181825")
         win.attributes("-topmost", True)
         apply_stealth_affinity(win.winfo_id())
 
+        # Header Title
         tk.Label(
             win,
-            text="Enter your Gemini API Key from Google AI Studio:",
+            text="⚡ Gemini API Key & Quota Manager",
             bg="#181825",
-            fg="#cdd6f4",
-            font=("Segoe UI", 9)
+            fg="#89b4fa",
+            font=("Segoe UI", 11, "bold")
         ).pack(pady=(12, 4))
 
-        ent = tk.Entry(win, width=44, font=("Consolas", 10), bg="#313244", fg="#ffffff", insertbackground="#ffffff")
-        ent.pack(pady=6)
+        # Current Key Info & Quota
+        info_frame = tk.Frame(win, bg="#1e1e2e", padx=10, pady=8)
+        info_frame.pack(fill="x", padx=16, pady=6)
+
+        lbl_curr = tk.Label(
+            info_frame,
+            text=f"Active Key: {masked_key}",
+            bg="#1e1e2e",
+            fg="#cdd6f4",
+            font=("Segoe UI", 9)
+        )
+        lbl_curr.pack(anchor="w")
+
+        lbl_quota_info = tk.Label(
+            info_frame,
+            text=f"Today's Quota: {self.quota_tracker.get_remaining():,} / 1,500 questions left",
+            bg="#1e1e2e",
+            fg="#a6e3a1",
+            font=("Segoe UI", 9, "bold")
+        )
+        lbl_quota_info.pack(anchor="w", pady=(2, 0))
+
+        # Input Prompt
+        tk.Label(
+            win,
+            text="Enter New Gemini API Key:",
+            bg="#181825",
+            fg="#bac2de",
+            font=("Segoe UI", 9)
+        ).pack(anchor="w", padx=16, pady=(6, 2))
+
+        ent = tk.Entry(
+            win,
+            width=50,
+            font=("Consolas", 10),
+            bg="#313244",
+            fg="#ffffff",
+            insertbackground="#ffffff",
+            bd=1,
+            relief="solid"
+        )
+        ent.pack(padx=16, pady=4)
         ent.focus_set()
 
-        btn = tk.Button(
-            win,
-            text="Save Key",
+        lbl_msg = tk.Label(win, text="", bg="#181825", font=("Segoe UI", 8))
+        lbl_msg.pack(pady=2)
+
+        # Button Actions
+        btn_frame = tk.Frame(win, bg="#181825")
+        btn_frame.pack(pady=8)
+
+        def test_key():
+            k = ent.get().strip() or active_key
+            if not k:
+                lbl_msg.config(text="Please paste an API key to test.", fg="#f38ba8")
+                return
+            lbl_msg.config(text="Testing key with Gemini...", fg="#f9e2af")
+            win.update_idletasks()
+
+            def _test():
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{DEFAULT_MODEL}:generateContent?key={k}"
+                try:
+                    payload = {"contents": [{"parts": [{"text": "ping"}]}]}
+                    r = requests.post(url, json=payload, timeout=10)
+                    if r.status_code == 200:
+                        lbl_msg.config(text="✓ Key is VALID and ready for exams!", fg="#a6e3a1")
+                    else:
+                        lbl_msg.config(text=f"✗ Error {r.status_code}: Invalid key", fg="#f38ba8")
+                except Exception as ex:
+                    lbl_msg.config(text=f"✗ Connection error: {str(ex)[:35]}", fg="#f38ba8")
+
+            threading.Thread(target=_test, daemon=True).start()
+
+        def save_key():
+            new_key = ent.get().strip()
+            if not new_key:
+                lbl_msg.config(text="Please paste a key first.", fg="#f38ba8")
+                return
+            env_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+            try:
+                with open(env_file, "w", encoding="utf-8") as f:
+                    f.write(f"GEMINI_API_KEY={new_key}\n")
+            except Exception:
+                pass
+            os.environ["GEMINI_API_KEY"] = new_key
+            global GEMINI_API_KEY
+            GEMINI_API_KEY = new_key
+            lbl_curr.config(text=f"Active Key: {new_key[:8]}...{new_key[-4:]}")
+            lbl_msg.config(text="✓ New Key Saved Successfully!", fg="#a6e3a1")
+            self.update_status("Gemini API Key Updated!", self.success_color)
+
+        btn_test = tk.Button(
+            btn_frame,
+            text="🧪 Test Key",
+            bg="#313244",
+            fg="#cdd6f4",
+            activebackground="#45475a",
+            font=("Segoe UI", 9),
+            bd=0,
+            padx=12,
+            pady=4,
+            cursor="hand2",
+            command=test_key
+        )
+        btn_test.pack(side="left", padx=6)
+
+        btn_save = tk.Button(
+            btn_frame,
+            text="💾 Save Key",
             bg="#89b4fa",
             fg="#11111b",
+            activebackground="#b4befe",
             font=("Segoe UI", 9, "bold"),
             bd=0,
             padx=14,
             pady=4,
+            cursor="hand2",
             command=save_key
         )
-        btn.pack(pady=8)
+        btn_save.pack(side="left", padx=6)
+
+        btn_close = tk.Button(
+            btn_frame,
+            text="✕ Close",
+            bg="#313244",
+            fg="#f38ba8",
+            font=("Segoe UI", 9),
+            bd=0,
+            padx=10,
+            pady=4,
+            cursor="hand2",
+            command=win.destroy
+        )
+        btn_close.pack(side="left", padx=6)
 
 
 # =====================================================================
