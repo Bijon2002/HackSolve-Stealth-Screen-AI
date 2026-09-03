@@ -55,8 +55,8 @@ OVERLAY_Y = 50
 OVERLAY_WIDTH = 540
 OVERLAY_HEIGHT = 680
 OPACITY = 0.95
-DEFAULT_MODEL = "gemini-2.5-flash"
-FALLBACK_MODELS = ["gemini-1.5-flash", "gemini-1.5-pro"]
+DEFAULT_MODEL = "gemini-3.6-flash"
+FALLBACK_MODELS = ["gemini-flash-latest", "gemini-3.1-pro-preview", "gemini-pro-latest"]
 # =====================================================================
 
 
@@ -588,8 +588,9 @@ class StealthOverlayApp:
         """Captures full screen or primary monitor image."""
         try:
             if mss:
-                with mss.mss() as sct:
-                    # Monitor 1 or all monitors
+                mss_factory = getattr(mss, "MSS", getattr(mss, "mss", None))
+                with mss_factory() as sct:
+                    # Monitor 1 or primary monitor
                     monitor = sct.monitors[1] if len(sct.monitors) > 1 else sct.monitors[0]
                     sct_img = sct.grab(monitor)
                     return Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
@@ -615,7 +616,8 @@ class StealthOverlayApp:
             text = pytesseract.image_to_string(preprocessed, config=custom_config)
             return text.strip()
         except Exception as e:
-            print(f"[OCR warning] Tesseract run error: {e}")
+            # If Tesseract is not installed, HackSolve automatically uses Gemini Multimodal Vision
+            print(f"[Info] Tesseract OCR not active ({e.__class__.__name__}) — seamlessly using Gemini Multimodal Vision fallback.")
             return ""
 
     def solve_with_gemini(self, ocr_text: str, screenshot: "Image.Image", api_key: str) -> dict:
