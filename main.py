@@ -48,6 +48,8 @@ except ImportError:
 # USER CONFIGURATION (Edit these as needed)
 # =====================================================================
 GEMINI_API_KEY = "YOUR_API_KEY_HERE"  # Set your key here or in .env file
+GROQ_API_KEY = "YOUR_GROQ_KEY_HERE"
+OPENROUTER_API_KEY = "YOUR_OPENROUTER_KEY_HERE"
 TESSERACT_PATH = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 HOTKEY = "f9"
 OVERLAY_X = 50
@@ -57,6 +59,8 @@ OVERLAY_HEIGHT = 680
 OPACITY = 0.95
 DEFAULT_MODEL = "gemini-3.6-flash"
 FALLBACK_MODELS = ["gemini-flash-latest", "gemini-3.8-flash"]
+GROQ_MODEL = "openai/gpt-oss-120b"
+GROQ_FALLBACK_MODEL = "groq/compound-mini"
 TIMEOUT = 30
 # =====================================================================
 
@@ -98,6 +102,48 @@ def get_active_gemini_key() -> str:
             with open(env_file, "r", encoding="utf-8") as f:
                 for line in f:
                     if line.startswith("GEMINI_API_KEY="):
+                        k = line.strip().split("=", 1)[1].strip(" '\"")
+                        if k:
+                            return k
+        except Exception:
+            pass
+    return ""
+
+
+def get_active_groq_key() -> str:
+    """Resolves Groq API Key from constant, environment, or .env file."""
+    if GROQ_API_KEY and GROQ_API_KEY.strip() and GROQ_API_KEY != "YOUR_GROQ_KEY_HERE":
+        return GROQ_API_KEY.strip()
+    env_key = os.environ.get("GROQ_API_KEY", "").strip()
+    if env_key:
+        return env_key
+    env_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    if os.path.exists(env_file):
+        try:
+            with open(env_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    if line.startswith("GROQ_API_KEY="):
+                        k = line.strip().split("=", 1)[1].strip(" '\"")
+                        if k:
+                            return k
+        except Exception:
+            pass
+    return ""
+
+
+def get_active_openrouter_key() -> str:
+    """Resolves OpenRouter API Key from constant, environment, or .env file."""
+    if OPENROUTER_API_KEY and OPENROUTER_API_KEY.strip() and OPENROUTER_API_KEY != "YOUR_OPENROUTER_KEY_HERE":
+        return OPENROUTER_API_KEY.strip()
+    env_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+    if env_key:
+        return env_key
+    env_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    if os.path.exists(env_file):
+        try:
+            with open(env_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    if line.startswith("OPENROUTER_API_KEY="):
                         k = line.strip().split("=", 1)[1].strip(" '\"")
                         if k:
                             return k
@@ -699,15 +745,9 @@ class StealthOverlayApp:
             self.update_status("Scanning problem text (OCR)...", self.warning_color)
             ocr_text = self.extract_text_ocr(screenshot)
 
-            # 3. Check if OCR produced viable text; if not, fallback to Gemini Multimodal
-            gemini_key = get_active_gemini_key()
-            if not gemini_key:
-                self.update_status("Error: Gemini API Key not set!", self.error_color)
-                self.show_api_key_prompt()
-                return
-
-            self.update_status("Solving with Gemini AI...", "#89b4fa")
-            solution_data = self.solve_with_gemini(ocr_text, screenshot, gemini_key)
+            # 3. Solve with Multi-Provider Failover (Groq / Gemini / OpenRouter)
+            self.update_status("Solving with Multi-AI Failover...", "#89b4fa")
+            solution_data = self.solve_with_failover(ocr_text, screenshot)
 
             # 4. Display Results
             self.root.after(0, self.display_solution, solution_data, ocr_text)
@@ -820,7 +860,7 @@ class StealthOverlayApp:
             print(f"[Info] Tesseract OCR not active ({e.__class__.__name__}) — seamlessly using Gemini Multimodal Vision fallback.")
             return ""
 
-    def solve_with_gemini(self, ocr_text: str, screenshot: "Image.Image", api_key: str) -> dict:
+    def solve_with_gemini(self, ocr_text: str, screenshot: "Image.Image", api_key: str, timeout: int = 25) -> dict:
         """Sends problem text (or multimodal image if OCR text is insufficient) to Gemini."""
         system_prompt = (
             "You are an elite competitive programmer and HackerRank algorithm solver. "
@@ -892,7 +932,7 @@ class StealthOverlayApp:
                 data_json = json.dumps(payload).encode("utf-8")
 
                 if requests:
-                    resp = requests.post(url, headers=headers, json=payload, timeout=35)
+                    resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
                     if resp.status_code == 200:
                         res_json = resp.json()
                         text_content = res_json["candidates"][0]["content"]["parts"][0]["text"]
@@ -909,7 +949,7 @@ class StealthOverlayApp:
                     # Standard library urllib fallback
                     import urllib.request
                     req = urllib.request.Request(url, data=data_json, headers=headers, method="POST")
-                    with urllib.request.urlopen(req, timeout=25) as response:
+                    with urllib.request.urlopen(req, timeout=timeout) as response:
                         res_body = response.read().decode("utf-8")
                         res_json = json.loads(res_body)
                         text_content = res_json["candidates"][0]["content"]["parts"][0]["text"]
@@ -937,13 +977,144 @@ class StealthOverlayApp:
             data = json.loads(clean_text)
             return data
         except Exception:
-            # Fallback: if Gemini returned raw code or text instead of JSON
+            # Fallback: if model returned raw code or text instead of JSON
             return {
                 "code": clean_text,
                 "explanation": "Extracted direct response",
                 "problem_title": "Detected Question",
                 "confidence": "Medium"
             }
+
+    def call_single_provider(self, provider: dict, ocr_text: str, screenshot: "Image.Image", timeout: int = 5) -> dict:
+        """Invokes a single AI provider (Groq, Gemini, OpenRouter) with strict timeout."""
+        system_prompt = (
+            "You are an elite competitive programmer and HackerRank algorithm solver. "
+            "Analyze the problem and provide the optimal, passing Python 3 solution.\n"
+            "Rules:\n"
+            "1. Output valid, clean Python 3 with necessary imports.\n"
+            "2. Read input from standard input (sys.stdin.read().split() or input()) as required by HackerRank.\n"
+            "3. Format response strictly as JSON with keys: 'code', 'explanation', 'problem_title', 'confidence'."
+        )
+
+        p_type = provider["type"]
+        p_name = provider["name"]
+        p_key = provider["key"]
+        p_model = provider["model"]
+        p_url = provider["url"]
+
+        if p_type == "openai_compat":
+            prompt_text = (
+                f"{system_prompt}\n\n"
+                f"--- EXTRACTED SCREEN TEXT / PROBLEM STATEMENT ---\n"
+                f"{ocr_text or 'Solve the coding problem shown on screen.'}\n"
+                f"--------------------------------------------------\n"
+                "Return JSON with 'code', 'explanation', 'problem_title', 'confidence'."
+            )
+            headers = {
+                "Authorization": f"Bearer {p_key}",
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "model": p_model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt_text}
+                ],
+                "response_format": {"type": "json_object"},
+                "temperature": 0.2
+            }
+            resp = requests.post(p_url, headers=headers, json=payload, timeout=timeout)
+            if resp.status_code != 200:
+                raise RuntimeError(f"{p_name} error {resp.status_code}: {resp.text[:120]}")
+            res_json = resp.json()
+            data_str = res_json["choices"][0]["message"]["content"]
+            parsed = self.parse_gemini_json_response(data_str)
+            usage = res_json.get("usage", {})
+            parsed["usage_metadata"] = {
+                "totalTokenCount": usage.get("total_tokens", 0),
+                "promptTokenCount": usage.get("prompt_tokens", 0),
+                "candidatesTokenCount": usage.get("completion_tokens", 0)
+            }
+            return parsed
+
+        elif p_type == "gemini":
+            return self.solve_with_gemini(ocr_text, screenshot, p_key, timeout=timeout)
+        else:
+            raise ValueError(f"Unknown provider type: {p_type}")
+
+    def solve_with_failover(self, ocr_text: str, screenshot: "Image.Image") -> dict:
+        """Attempts providers in order with a 5-second automatic switch timeout."""
+        groq_key = get_active_groq_key()
+        gemini_key = get_active_gemini_key()
+        openrouter_key = get_active_openrouter_key()
+
+        providers = []
+        # Priority 1: Groq (if OCR text exists) — 14,400 req/day, blazing fast (<1s)
+        if len(ocr_text.strip()) >= 25 and groq_key:
+            providers.append({
+                "name": "Groq",
+                "type": "openai_compat",
+                "key": groq_key,
+                "model": GROQ_MODEL,
+                "url": "https://api.groq.com/openai/v1/chat/completions"
+            })
+
+        # Priority 2: Gemini (Vision + Text) — Full multimodal vision support
+        if gemini_key:
+            providers.append({
+                "name": "Gemini",
+                "type": "gemini",
+                "key": gemini_key,
+                "model": DEFAULT_MODEL,
+                "url": f"https://generativelanguage.googleapis.com/v1beta/models/{DEFAULT_MODEL}:generateContent"
+            })
+
+        # Priority 3: Groq with fallback model (if Gemini fails or OCR text was short)
+        if groq_key and not any(p["name"] == "Groq" for p in providers):
+            providers.append({
+                "name": "Groq",
+                "type": "openai_compat",
+                "key": groq_key,
+                "model": GROQ_FALLBACK_MODEL,
+                "url": "https://api.groq.com/openai/v1/chat/completions"
+            })
+
+        # Priority 4: OpenRouter
+        if openrouter_key:
+            providers.append({
+                "name": "OpenRouter",
+                "type": "openai_compat",
+                "key": openrouter_key,
+                "model": "meta-llama/llama-3.1-8b-instruct:free",
+                "url": "https://openrouter.ai/api/v1/chat/completions"
+            })
+
+        if not providers:
+            raise RuntimeError("No AI keys configured! Click [🔑 API Key] to set your Groq or Gemini key.")
+
+        last_error = None
+        for p in providers:
+            p_name = p["name"]
+            p_model = p["model"]
+            self.update_status(f"Trying {p_name} ({p_model})...", "#89b4fa")
+            t_start = time.time()
+            try:
+                parsed = self.call_single_provider(p, ocr_text, screenshot, timeout=5)
+                if parsed and parsed.get("code"):
+                    elapsed = round(time.time() - t_start, 2)
+                    parsed["provider_name"] = p_name
+                    parsed["provider_model"] = p_model
+                    parsed["elapsed_sec"] = elapsed
+                    print(f"[OK] Solution received via {p_name} ({p_model}) in {elapsed}s")
+                    return parsed
+            except Exception as e:
+                last_error = e
+                elapsed = round(time.time() - t_start, 2)
+                print(f"[FAIL] {p_name} failed in {elapsed}s: {e} — switching to next provider...")
+                self.update_status(f"{p_name} failed, switching to backup...", self.warning_color)
+                continue
+
+        raise RuntimeError(f"All AI providers failed. Last error: {last_error}")
 
     def display_solution(self, solution_data: dict, ocr_text: str):
         """Renders parsed solution data into the UI widgets."""
@@ -974,13 +1145,18 @@ class StealthOverlayApp:
 
         # Update Explanation tab
         self.txt_exp.delete("1.0", tk.END)
-        model_info = f"Model: {DEFAULT_MODEL} (Google AI Studio)\n"
+        provider_name = solution_data.get("provider_name", "AI")
+        provider_model = solution_data.get("provider_model", DEFAULT_MODEL)
+        elapsed_sec = solution_data.get("elapsed_sec", "")
+        speed_badge = f" ({elapsed_sec}s)" if elapsed_sec else ""
+
+        provider_line = f"Provider: {provider_name} | Model: {provider_model} | Latency: {elapsed_sec or 'N/A'}s\n"
         token_info = ""
         if total_tokens > 0:
             token_info = f"Tokens: {total_tokens:,} (Prompt: {prompt_tokens:,} | Code: {code_tokens:,})\n"
         quota_info = f"Daily Remaining: {self.quota_tracker.get_remaining():,} / 1,500 questions\n"
         scroll_info = "Capture Mode: Auto-Scrolled & Stitched\n" if self.auto_scroll_enabled else "Capture Mode: Single Screen\n"
-        exp_header = f"Problem: {title}\nConfidence: {confidence}\n{model_info}{scroll_info}{token_info}{quota_info}{'='*45}\n\n"
+        exp_header = f"Problem: {title}\nConfidence: {confidence}\n{provider_line}{scroll_info}{token_info}{quota_info}{'='*45}\n\n"
         self.txt_exp.insert("1.0", exp_header + str(explanation))
 
         # Update OCR tab
@@ -988,11 +1164,11 @@ class StealthOverlayApp:
         if ocr_text:
             self.txt_ocr.insert("1.0", ocr_text)
         else:
-            self.txt_ocr.insert("1.0", "(OCR text empty — Multimodal Vision Fallback was used directly)")
+            self.txt_ocr.insert("1.0", "(OCR text empty — Multimodal Vision was used directly)")
 
         # Switch to Code tab
         self.notebook.select(self.tab_code)
-        self.update_status(f"✓ Ready: {title[:28]}", self.success_color)
+        self.update_status(f"✓ {provider_name}{speed_badge}: {title[:20]}", self.success_color)
 
     def update_quota_display(self):
         """Refreshes the remaining questions counter on the status bar."""
@@ -1000,13 +1176,17 @@ class StealthOverlayApp:
             self.lbl_quota.config(text=self.quota_tracker.get_display_text())
 
     def show_api_key_prompt(self):
-        """Displays interactive API Key Manager to change, test, and view quota."""
-        active_key = get_active_gemini_key()
-        masked_key = (active_key[:8] + "..." + active_key[-4:]) if len(active_key) > 12 else (active_key or "Not Set")
+        """Displays interactive API Key Manager for Gemini, Groq, and OpenRouter."""
+        active_gemini = get_active_gemini_key()
+        active_groq = get_active_groq_key()
+        active_openrouter = get_active_openrouter_key()
+
+        def mask(k):
+            return (k[:8] + "..." + k[-4:]) if len(k) > 12 else (k or "Not Configured")
 
         win = tk.Toplevel(self.root)
-        win.title("🔑 Gemini API Key Manager")
-        win.geometry("480x280")
+        win.title("🔑 Multi-AI Provider Key Manager")
+        win.geometry("520x480")
         win.configure(bg="#181825")
         win.attributes("-topmost", True)
         apply_stealth_affinity(win.winfo_id())
@@ -1014,121 +1194,118 @@ class StealthOverlayApp:
         # Header Title
         tk.Label(
             win,
-            text="⚡ Gemini API Key & Quota Manager",
+            text="⚡ Multi-AI API Key Manager (Groq + Gemini + OpenRouter)",
             bg="#181825",
             fg="#89b4fa",
             font=("Segoe UI", 11, "bold")
         ).pack(pady=(12, 4))
 
-        # Current Key Info & Quota
-        info_frame = tk.Frame(win, bg="#1e1e2e", padx=10, pady=8)
-        info_frame.pack(fill="x", padx=16, pady=6)
+        # Groq Section (14,400 req/day - Primary Text LPU)
+        groq_frame = tk.LabelFrame(win, text=" Groq API Key (Primary — 14,400 Free Req/Day) ", bg="#1e1e2e", fg="#a6e3a1", font=("Segoe UI", 9, "bold"), padx=10, pady=6)
+        groq_frame.pack(fill="x", padx=16, pady=4)
 
-        lbl_curr = tk.Label(
-            info_frame,
-            text=f"Active Key: {masked_key}",
-            bg="#1e1e2e",
-            fg="#cdd6f4",
-            font=("Segoe UI", 9)
-        )
-        lbl_curr.pack(anchor="w")
+        tk.Label(groq_frame, text=f"Active: {mask(active_groq)}", bg="#1e1e2e", fg="#cdd6f4", font=("Segoe UI", 8)).pack(anchor="w")
+        ent_groq = tk.Entry(groq_frame, width=54, font=("Consolas", 9), bg="#313244", fg="#ffffff", insertbackground="#ffffff", bd=1, relief="solid")
+        ent_groq.pack(fill="x", pady=3)
+        if active_groq:
+            ent_groq.insert(0, active_groq)
 
-        lbl_quota_info = tk.Label(
-            info_frame,
-            text=f"Today's Quota: {self.quota_tracker.get_remaining():,} / 1,500 questions left",
-            bg="#1e1e2e",
-            fg="#a6e3a1",
-            font=("Segoe UI", 9, "bold")
-        )
-        lbl_quota_info.pack(anchor="w", pady=(2, 0))
+        lbl_groq_status = tk.Label(groq_frame, text="Ready", bg="#1e1e2e", fg="#6c7086", font=("Segoe UI", 8))
+        lbl_groq_status.pack(anchor="w")
 
-        # Input Prompt
-        tk.Label(
-            win,
-            text="Enter New Gemini API Key:",
-            bg="#181825",
-            fg="#bac2de",
-            font=("Segoe UI", 9)
-        ).pack(anchor="w", padx=16, pady=(6, 2))
-
-        ent = tk.Entry(
-            win,
-            width=50,
-            font=("Consolas", 10),
-            bg="#313244",
-            fg="#ffffff",
-            insertbackground="#ffffff",
-            bd=1,
-            relief="solid"
-        )
-        ent.pack(padx=16, pady=4)
-        ent.focus_set()
-
-        lbl_msg = tk.Label(win, text="", bg="#181825", font=("Segoe UI", 8))
-        lbl_msg.pack(pady=2)
-
-        # Button Actions
-        btn_frame = tk.Frame(win, bg="#181825")
-        btn_frame.pack(pady=8)
-
-        def test_key():
-            k = ent.get().strip() or active_key
+        def test_groq():
+            k = ent_groq.get().strip()
             if not k:
-                lbl_msg.config(text="Please paste an API key to test.", fg="#f38ba8")
+                lbl_groq_status.config(text="✗ Please enter a Groq API key.", fg="#f38ba8")
                 return
-            lbl_msg.config(text="Testing key with Gemini...", fg="#f9e2af")
-            win.update_idletasks()
+            lbl_groq_status.config(text="Testing Groq...", fg="#f9e2af")
+            def _test():
+                url = "https://api.groq.com/openai/v1/chat/completions"
+                headers = {"Authorization": f"Bearer {k}", "Content-Type": "application/json"}
+                payload = {"model": GROQ_MODEL, "messages": [{"role": "user", "content": "hi"}], "temperature": 0.2}
+                try:
+                    r = requests.post(url, headers=headers, json=payload, timeout=6)
+                    if r.status_code == 200:
+                        lbl_groq_status.config(text="✓ Groq Key VALID! (14,400 req/day active)", fg="#a6e3a1")
+                    else:
+                        lbl_groq_status.config(text=f"✗ Groq Error {r.status_code}: {r.text[:40]}", fg="#f38ba8")
+                except Exception as ex:
+                    lbl_groq_status.config(text=f"✗ Connection error: {str(ex)[:35]}", fg="#f38ba8")
+            threading.Thread(target=_test, daemon=True).start()
 
+        tk.Button(groq_frame, text="🧪 Test Groq", bg="#313244", fg="#cdd6f4", font=("Segoe UI", 8), bd=0, padx=8, pady=2, command=test_groq).pack(anchor="e", pady=(0, 2))
+
+        # Gemini Section (1,500 req/day - Vision Multimodal)
+        gemini_frame = tk.LabelFrame(win, text=" Gemini API Key (Vision Multimodal — 1,500 Free Req/Day) ", bg="#1e1e2e", fg="#89b4fa", font=("Segoe UI", 9, "bold"), padx=10, pady=6)
+        gemini_frame.pack(fill="x", padx=16, pady=4)
+
+        tk.Label(gemini_frame, text=f"Active: {mask(active_gemini)}", bg="#1e1e2e", fg="#cdd6f4", font=("Segoe UI", 8)).pack(anchor="w")
+        ent_gemini = tk.Entry(gemini_frame, width=54, font=("Consolas", 9), bg="#313244", fg="#ffffff", insertbackground="#ffffff", bd=1, relief="solid")
+        ent_gemini.pack(fill="x", pady=3)
+        if active_gemini:
+            ent_gemini.insert(0, active_gemini)
+
+        lbl_gemini_status = tk.Label(gemini_frame, text="Ready", bg="#1e1e2e", fg="#6c7086", font=("Segoe UI", 8))
+        lbl_gemini_status.pack(anchor="w")
+
+        def test_gemini():
+            k = ent_gemini.get().strip()
+            if not k:
+                lbl_gemini_status.config(text="✗ Please enter a Gemini API key.", fg="#f38ba8")
+                return
+            lbl_gemini_status.config(text="Testing Gemini...", fg="#f9e2af")
             def _test():
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/{DEFAULT_MODEL}:generateContent?key={k}"
                 try:
-                    payload = {"contents": [{"parts": [{"text": "ping"}]}]}
-                    r = requests.post(url, json=payload, timeout=10)
+                    payload = {"contents": [{"parts": [{"text": "hi"}]}]}
+                    r = requests.post(url, json=payload, timeout=8)
                     if r.status_code == 200:
-                        lbl_msg.config(text="✓ Key is VALID and ready for exams!", fg="#a6e3a1")
+                        lbl_gemini_status.config(text="✓ Gemini Key VALID and active!", fg="#a6e3a1")
                     else:
-                        lbl_msg.config(text=f"✗ Error {r.status_code}: Invalid key", fg="#f38ba8")
+                        lbl_gemini_status.config(text=f"✗ Gemini Error {r.status_code}: {r.text[:40]}", fg="#f38ba8")
                 except Exception as ex:
-                    lbl_msg.config(text=f"✗ Connection error: {str(ex)[:35]}", fg="#f38ba8")
-
+                    lbl_gemini_status.config(text=f"✗ Connection error: {str(ex)[:35]}", fg="#f38ba8")
             threading.Thread(target=_test, daemon=True).start()
 
-        def save_key():
-            new_key = ent.get().strip()
-            if not new_key:
-                lbl_msg.config(text="Please paste a key first.", fg="#f38ba8")
-                return
+        tk.Button(gemini_frame, text="🧪 Test Gemini", bg="#313244", fg="#cdd6f4", font=("Segoe UI", 8), bd=0, padx=8, pady=2, command=test_gemini).pack(anchor="e", pady=(0, 2))
+
+        # Bottom Actions
+        btn_frame = tk.Frame(win, bg="#181825")
+        btn_frame.pack(pady=10)
+
+        lbl_global_msg = tk.Label(win, text="", bg="#181825", font=("Segoe UI", 8))
+        lbl_global_msg.pack()
+
+        def save_all_keys():
+            new_groq = ent_groq.get().strip()
+            new_gemini = ent_gemini.get().strip()
+
             env_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
             try:
                 with open(env_file, "w", encoding="utf-8") as f:
-                    f.write(f"GEMINI_API_KEY={new_key}\n")
-            except Exception:
-                pass
-            os.environ["GEMINI_API_KEY"] = new_key
-            global GEMINI_API_KEY
-            GEMINI_API_KEY = new_key
-            lbl_curr.config(text=f"Active Key: {new_key[:8]}...{new_key[-4:]}")
-            lbl_msg.config(text="✓ New Key Saved Successfully!", fg="#a6e3a1")
-            self.update_status("Gemini API Key Updated!", self.success_color)
+                    if new_gemini:
+                        f.write(f"GEMINI_API_KEY={new_gemini}\n")
+                    if new_groq:
+                        f.write(f"GROQ_API_KEY={new_groq}\n")
+            except Exception as e:
+                lbl_global_msg.config(text=f"Error saving file: {e}", fg="#f38ba8")
+                return
 
-        btn_test = tk.Button(
-            btn_frame,
-            text="🧪 Test Key",
-            bg="#313244",
-            fg="#cdd6f4",
-            activebackground="#45475a",
-            font=("Segoe UI", 9),
-            bd=0,
-            padx=12,
-            pady=4,
-            cursor="hand2",
-            command=test_key
-        )
-        btn_test.pack(side="left", padx=6)
+            if new_gemini:
+                os.environ["GEMINI_API_KEY"] = new_gemini
+                global GEMINI_API_KEY
+                GEMINI_API_KEY = new_gemini
+            if new_groq:
+                os.environ["GROQ_API_KEY"] = new_groq
+                global GROQ_API_KEY
+                GROQ_API_KEY = new_groq
+
+            lbl_global_msg.config(text="✓ All API Keys saved to .env and activated!", fg="#a6e3a1")
+            self.update_status("Multi-AI Provider Keys Updated!", self.success_color)
 
         btn_save = tk.Button(
             btn_frame,
-            text="💾 Save Key",
+            text="💾 Save All Keys",
             bg="#89b4fa",
             fg="#11111b",
             activebackground="#b4befe",
@@ -1137,7 +1314,7 @@ class StealthOverlayApp:
             padx=14,
             pady=4,
             cursor="hand2",
-            command=save_key
+            command=save_all_keys
         )
         btn_save.pack(side="left", padx=6)
 
