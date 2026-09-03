@@ -55,8 +55,8 @@ OVERLAY_Y = 50
 OVERLAY_WIDTH = 540
 OVERLAY_HEIGHT = 680
 OPACITY = 0.95
-DEFAULT_MODEL = "gemini-3.6-flash"
-FALLBACK_MODELS = ["gemini-flash-latest"]
+DEFAULT_MODEL = "gemini-2.0-flash"
+FALLBACK_MODELS = ["gemini-1.5-flash"]
 # =====================================================================
 
 
