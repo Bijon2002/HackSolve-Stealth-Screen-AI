@@ -193,8 +193,8 @@ class StealthOverlayApp:
         self.last_explanation = ""
         self.is_processing = False
         self.opacity_level = OPACITY
+        self.auto_scroll_enabled = True
         self.quota_tracker = QuotaTracker()
-        self.opacity_level = OPACITY
 
         # Window styling
         self.root.title("HackSolve — Stealth AI")
@@ -305,11 +305,11 @@ class StealthOverlayApp:
         self.title_bar.bind("<Button-1>", self.start_drag)
         self.title_bar.bind("<B1-Motion>", self.do_drag)
 
-        # Title / Brand Icon
+        # Title / Brand Icon with Active Model Name
         self.lbl_title = tk.Label(
             self.title_bar,
-            text="⚡ HackSolve — Stealth AI",
-            font=("Segoe UI", 10, "bold"),
+            text=f"⚡ HackSolve — {DEFAULT_MODEL}",
+            font=("Segoe UI", 9, "bold"),
             bg=self.header_bg,
             fg=self.accent_color,
             padx=8
@@ -418,6 +418,23 @@ class StealthOverlayApp:
             command=self.trigger_scan_thread
         )
         self.btn_scan.pack(side="left", padx=(0, 6))
+
+        # Auto-Scroll toggle button
+        self.btn_scroll = tk.Button(
+            self.toolbar,
+            text="📜 Scroll: ON",
+            font=("Segoe UI", 9, "bold"),
+            bg="#313244",
+            fg=self.success_color,
+            activebackground="#45475a",
+            activeforeground="#ffffff",
+            bd=0,
+            padx=8,
+            pady=4,
+            cursor="hand2",
+            command=self.toggle_autoscroll
+        )
+        self.btn_scroll.pack(side="left", padx=4)
 
         self.btn_copy = tk.Button(
             self.toolbar,
@@ -634,6 +651,16 @@ class StealthOverlayApp:
             self.btn_copy.config(text="✓ Copied!", bg="#a6e3a1", fg="#11111b")
             self.root.after(2000, lambda: self.btn_copy.config(text="📋 Copy Code", bg="#313244", fg=self.text_primary))
 
+    def toggle_autoscroll(self):
+        """Toggles between full auto-scrolling capture and single screen capture."""
+        self.auto_scroll_enabled = not self.auto_scroll_enabled
+        if self.auto_scroll_enabled:
+            self.btn_scroll.config(text="📜 Scroll: ON", fg=self.success_color)
+            self.update_status("Auto-Scroll: ON (Captures & stitches full question)", self.success_color)
+        else:
+            self.btn_scroll.config(text="📜 Scroll: OFF", fg=self.text_dim)
+            self.update_status("Auto-Scroll: OFF (Single screen capture)", self.text_dim)
+
     # ================= CORE LOGIC =================
     def trigger_scan_thread(self):
         if self.is_processing:
@@ -643,12 +670,17 @@ class StealthOverlayApp:
 
     def run_screen_solve_pipeline(self):
         self.is_processing = True
-        self.update_status("Capturing screen...", self.warning_color)
         self.btn_scan.config(state="disabled", bg="#45475a")
 
         try:
-            # 1. Capture Screen
-            screenshot = self.capture_screen()
+            # 1. Capture Screen (Auto-scroll or single)
+            if self.auto_scroll_enabled:
+                self.update_status("Auto-scrolling problem (top to bottom)...", self.warning_color)
+                screenshot = self.capture_auto_scroll_screen(frames=3)
+            else:
+                self.update_status("Capturing screen...", self.warning_color)
+                screenshot = self.capture_screen()
+
             if not screenshot:
                 self.update_status("Screen capture failed", self.error_color)
                 return
@@ -677,6 +709,70 @@ class StealthOverlayApp:
         finally:
             self.is_processing = False
             self.btn_scan.config(state="normal", bg="#89b4fa")
+
+    def capture_auto_scroll_screen(self, frames: int = 3) -> "Image.Image":
+        """Captures multiple views while scrolling the active window and stitches them vertically."""
+        images = []
+        first_img = self.capture_screen()
+        if not first_img:
+            return None
+        images.append(first_img)
+
+        if not self.auto_scroll_enabled or frames <= 1:
+            return first_img
+
+        MOUSEEVENTF_WHEEL = 0x0800
+        WHEEL_DELTA = 120
+        # Scroll clicks per frame (~65% of screen height jump)
+        scroll_clicks_per_frame = 7
+
+        for i in range(1, frames):
+            self.update_status(f"Auto-scrolling problem ({i+1}/{frames})...", self.warning_color)
+            # Scroll down smoothly
+            for _ in range(scroll_clicks_per_frame):
+                ctypes.windll.user32.mouse_event(MOUSEEVENTF_WHEEL, 0, 0, -WHEEL_DELTA, 0)
+                time.sleep(0.03)
+            time.sleep(0.35)  # Wait for page layout/render
+            img = self.capture_screen()
+            if img:
+                images.append(img)
+
+        # Smoothly scroll back up to restore user's original view
+        total_scroll_back = (len(images) - 1) * scroll_clicks_per_frame
+        for _ in range(total_scroll_back):
+            ctypes.windll.user32.mouse_event(MOUSEEVENTF_WHEEL, 0, 0, WHEEL_DELTA, 0)
+            time.sleep(0.015)
+
+        return self.stitch_images(images)
+
+    def stitch_images(self, images: list) -> "Image.Image":
+        """Stitches multiple scroll captures into one tall composite image."""
+        if not images:
+            return None
+        if len(images) == 1:
+            return images[0]
+
+        width = images[0].width
+        processed_frames = []
+        for idx, img in enumerate(images):
+            if idx == 0:
+                processed_frames.append(img)
+            else:
+                # In browser windows, crop the top ~80px duplicate URL/tab bar
+                if img.height > 120:
+                    crop_box = (0, 80, img.width, img.height)
+                    processed_frames.append(img.crop(crop_box))
+                else:
+                    processed_frames.append(img)
+
+        total_height = sum(f.height for f in processed_frames)
+        stitched = Image.new("RGB", (width, total_height), color=(24, 24, 37))
+        y_offset = 0
+        for f in processed_frames:
+            stitched.paste(f, (0, y_offset))
+            y_offset += f.height
+
+        return stitched
 
     def capture_screen(self) -> "Image.Image":
         """Captures full screen or primary monitor image."""
@@ -863,11 +959,13 @@ class StealthOverlayApp:
 
         # Update Explanation tab
         self.txt_exp.delete("1.0", tk.END)
+        model_info = f"Model: {DEFAULT_MODEL} (Google AI Studio)\n"
         token_info = ""
         if total_tokens > 0:
             token_info = f"Tokens: {total_tokens:,} (Prompt: {prompt_tokens:,} | Code: {code_tokens:,})\n"
         quota_info = f"Daily Remaining: {self.quota_tracker.get_remaining():,} / 1,500 questions\n"
-        exp_header = f"Problem: {title}\nConfidence: {confidence}\n{token_info}{quota_info}{'='*45}\n\n"
+        scroll_info = "Capture Mode: Auto-Scrolled & Stitched\n" if self.auto_scroll_enabled else "Capture Mode: Single Screen\n"
+        exp_header = f"Problem: {title}\nConfidence: {confidence}\n{model_info}{scroll_info}{token_info}{quota_info}{'='*45}\n\n"
         self.txt_exp.insert("1.0", exp_header + str(explanation))
 
         # Update OCR tab
