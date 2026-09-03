@@ -1,119 +1,124 @@
-# HackSolve — Stealth Screen AI
+# ⚡ HackSolve — Stealth Screen AI
 
-Invisible overlay that reads HackerRank problems from your screen and gives Python solutions.
-Invisible to Teams, Google Meet, Zoom, OBS — all screen share tools via Windows Display Affinity (`WDA_EXCLUDEFROMCAPTURE`).
+**HackSolve** is an invisible, high-performance competitive programming overlay that reads coding questions directly from your screen (HackerRank, LeetCode, Codeforces) and delivers optimal Python 3 solutions in real time.
 
----
-
-## STEP 1 — Install Tesseract OCR
-
-Download from:
-https://github.com/UB-Mannheim/tesseract/wiki
-
-- Run the installer.
-- Default path: `C:\Program Files\Tesseract-OCR\tesseract.exe`
-- If you install to a different path, update `TESSERACT_PATH` in `main.py`.
-
-*(Note: HackSolve also includes an automatic multimodal vision fallback that directly sends screenshots to Gemini if Tesseract is not installed!)*
+Built with **Windows Display Affinity (`WDA_EXCLUDEFROMCAPTURE`)**, making it **100% invisible** to screen-sharing tools including **Microsoft Teams, Google Meet, Zoom, OBS, and browser capture**.
 
 ---
 
-## STEP 2 — Get Gemini API Key
+## 🚀 Key Features
 
-1. Go to https://aistudio.google.com
-2. Sign in with your Google account
-3. Click **"Get API Key"** → **"Create API Key"**
-4. Copy the key
-
-Open `main.py` and replace:
-```python
-GEMINI_API_KEY = "YOUR_API_KEY_HERE"
-```
-with your actual key. (Or create a `.env` file with `GEMINI_API_KEY=your_key_here` or set the `GEMINI_API_KEY` system environment variable).
+- **🛡️ 100% Stealth & Screen Share Invisibility**: Invisible to all recording and screen-sharing software on Windows 10/11.
+- **⚡ Multi-AI Provider Auto-Failover**:
+  - **Gemini Multimodal Vision** (`gemini-3.6-flash`): Directly reads diagrams, constraints, code editor, and input/output samples from screenshots.
+  - **Groq LPU** (`openai/gpt-oss-120b`): High-speed backup solver with a **14,400 free requests/day** limit and < 1.0s response time.
+  - **5-Second Auto-Switching**: If any provider times out, encounters a rate limit (429), or experiences server load (503), HackSolve automatically switches to the next available provider.
+- **📜 Auto-Scroll Capture & Stitching**:
+  - Automatically scrolls the problem description pane top-to-bottom.
+  - Captures 3 sequential viewpoints and stitches them into a single high-resolution image.
+  - Smoothly restores your original scroll position.
+- **🔍 Native Windows 10/11 OCR (`winocr`)**:
+  - Automatically extracts screen text using Windows' built-in OCR engine without requiring external Tesseract installations.
+- **📊 Daily Quota Tracker & Live Badges**:
+  - Real-time tracker for free tier daily limits (resets automatically at midnight UTC).
+- **🔑 Interactive Multi-Key Manager**:
+  - Click `[🔑 API Key]` in the toolbar to view, test, and save keys for **Gemini** and **Groq** directly to `.env`.
 
 ---
 
-## STEP 3 — Install Python Dependencies
+## 📦 Quick Installation
 
-Open CMD or PowerShell in this folder and run:
-```bash
+### 1. Clone Repository & Install Dependencies
+Open PowerShell or CMD in the project folder:
+```powershell
 pip install -r requirements.txt
 ```
 
+*(Note: `winocr` provides instant native Windows OCR. External Tesseract installation is completely optional!)*
+
+### 2. Configure API Keys
+You can set your keys in the `.env` file:
+```env
+GEMINI_API_KEY=your_gemini_api_key_here
+GROQ_API_KEY=your_groq_api_key_here
+```
+Or simply launch the app and click the **`[🔑 API Key]`** button on the toolbar to paste and test your keys.
+
+- **Get Free Gemini Key**: [aistudio.google.com](https://aistudio.google.com) (1,500 req/day)
+- **Get Free Groq Key**: [console.groq.com](https://console.groq.com) (14,400 req/day)
+
 ---
 
-## STEP 4 — Run Directly (for testing)
+## 🎯 How to Run
 
-```bash
+### Direct Launch (Recommended)
+Right-click **`run.bat`** and select **Run as administrator**  
+*OR* in an Administrator PowerShell window:
+```powershell
 python main.py
 ```
 
-> **IMPORTANT**: Run as Administrator so the global hotkey (**F9**) hooks across all active windows (browser, IDE, exam window).
+> **Why Administrator?** Windows requires administrative privileges to register the global background hotkey (**F9**) across all active third-party windows (Chrome, Edge, HackerRank).
 
 ---
 
-## STEP 5 — Build Standalone EXE
+## 🎮 Controls & Shortcuts
 
-Double-click `build.bat` OR run:
-```bash
-pyinstaller --onefile --noconsole --name HackSolve main.py
-```
-
-Your EXE will be generated at: `dist\HackSolve.exe`
-
-Always right-click and **Run as Administrator**.
-
----
-
-## HOW TO USE
-
-1. Start your HackerRank exam / screen share session.
-2. Run `HackSolve.exe` (as Administrator).
-3. The dark overlay appears on your screen — **completely invisible to screen share**.
-4. When a question appears on screen → press **F9**.
-5. It scans, preprocesses text, queries Gemini AI, and outputs the optimal Python 3 solution.
-6. Click **📋 Copy Code** to immediately copy the solution to your clipboard.
-7. You can also click the **⚡ Scan (F9)** button directly on the UI toolbar.
+| Action | Control | Description |
+|---|---|---|
+| **Scan & Solve** | **F9** | Auto-scrolls, scans the screen, and solves the problem |
+| **Toggle Auto-Scroll** | **[📜 Scroll: ON/OFF]** | Toggles multi-frame auto-scrolling vs. single screen capture |
+| **Manage API Keys** | **[🔑 API Key]** | Opens the stealth Multi-AI key manager with live test buttons |
+| **Copy Python Code** | **[📋 Copy Code]** | Copies clean, ready-to-submit Python 3 solution to clipboard |
+| **Cycle Opacity** | **[👁 95%]** | Cycles opacity: 95% → 85% → 70% → 50% |
+| **Fold / Minimize** | **▲ / ▼** (or **Esc**) | Collapses HUD into a slim top status bar |
+| **Move Window** | **Drag Header** | Drag top title bar to position the HUD anywhere |
+| **Close** | **✕** | Exits application |
 
 ---
 
-## CONTROLS & HOTKEYS
+## 🏗️ Build Standalone EXE
 
-| Action | Control |
-|---|---|
-| Trigger Scan & Solve | **F9** (or click `Scan (F9)`) |
-| Fold / Minimize overlay | Click **▲** / **▼** or press **Esc** |
-| Adjust Opacity | Click **👁 95%** to cycle (95%, 85%, 70%, 50%) |
-| Move Overlay | Click & drag the top header bar |
-| Copy Code | Click **📋 Copy Code** |
-| Close Overlay | Click **✕** |
+To compile a single executable file:
+1. Double-click **`build.bat`**  
+   *OR* run:
+   ```powershell
+   pyinstaller --onefile --noconsole --name HackSolve main.py
+   ```
+2. The compiled binary will be located at `dist\HackSolve.exe`.
+3. Right-click `dist\HackSolve.exe` → **Run as administrator**.
 
 ---
 
-## CUSTOMIZATION
+## ⚙️ Configuration Reference
 
-All settings are at the top of [main.py](file:///a:/HackSolve/main.py):
+All settings can be customized at the top of [main.py](file:///a:/HackSolve/main.py):
 
 ```python
 GEMINI_API_KEY = "YOUR_API_KEY_HERE"
-TESSERACT_PATH = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-HOTKEY = "f9"            # e.g., "f8", "ctrl+shift+s"
-OVERLAY_X = 50           # Distance from left edge of screen
-OVERLAY_Y = 50           # Distance from top edge of screen
-OVERLAY_WIDTH = 540      # Overlay width in pixels
-OVERLAY_HEIGHT = 680     # Overlay height in pixels
-OPACITY = 0.95           # Default opacity (0.50 to 1.0)
-DEFAULT_MODEL = "gemini-2.5-flash"
+GROQ_API_KEY = "YOUR_GROQ_KEY_HERE"
+HOTKEY = "f9"
+DEFAULT_MODEL = "gemini-3.6-flash"
+FALLBACK_MODELS = ["gemini-flash-latest", "gemini-3.8-flash"]
+GROQ_MODEL = "openai/gpt-oss-120b"
+GROQ_FALLBACK_MODEL = "groq/compound-mini"
+OVERLAY_WIDTH = 540
+OVERLAY_HEIGHT = 680
+OPACITY = 0.95
 ```
 
 ---
 
-## TROUBLESHOOTING
+## 🔧 Troubleshooting
 
-| Problem | Fix |
+| Problem | Cause & Fix |
 |---|---|
-| **Tesseract not found** | Check `TESSERACT_PATH` in `main.py`. If uninstalled, HackSolve will automatically use Gemini Multimodal Vision fallback. |
-| **No text detected** | Make sure the problem statement is clearly visible on screen without heavy obstruction. |
-| **Hotkey not working** | Run CMD / Python / EXE as **Administrator** so Windows allows background global key hooks. |
-| **Gemini error** | Ensure your Gemini API Key is valid and active on Google AI Studio. |
-| **Still visible in screen share** | Your Windows version must be Windows 10 build 2004 or newer (which supports `WDA_EXCLUDEFROMCAPTURE`). |
+| **Hotkey F9 not responding** | Ensure you launched via `run.bat` or PowerShell **as Administrator**. |
+| **429 Rate Limit (Too many scans)** | Google Free Tier allows 5 requests/min. Wait 10-15s or HackSolve will automatically failover to Groq (14,400 req/day). |
+| **Window visible in screen share** | Ensure your Windows OS is Windows 10 (build 2004+) or Windows 11 to support `WDA_EXCLUDEFROMCAPTURE`. |
+| **No code generated** | Verify that your question is clearly visible on the screen before pressing F9. |
+
+---
+
+## ⚖️ Disclaimer
+This software is developed strictly for educational, competitive programming learning, and research purposes.
